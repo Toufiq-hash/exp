@@ -1,33 +1,28 @@
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 5000;
-
 
 app.use(cors());
 app.use(express.json());
 
 
-const uri = process.env.MONGODB_URI;
-
-if (!uri) {
-  console.error("❌ MONGODB_URI is missing in .env file");
-  process.exit(1);
-}
+const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/plantdb?retryWrites=true&w=majority&appName=Cluster0";
 
 const client = new MongoClient(uri, {
-  ssl: true, 
-  tlsAllowInvalidCertificates: false, 
+  ssl: true,
+  tlsAllowInvalidCertificates: false,
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
   },
- 
 });
+ 
+
+
 
 async function run() {
   try {
@@ -37,30 +32,25 @@ async function run() {
     const db = client.db("plantdb");
     const plantsCollection = db.collection("myplant");
 
-    
     app.get("/api/plants", async (req, res) => {
       try {
         const result = await plantsCollection.find().toArray();
         res.send(result);
       } catch (error) {
-        console.error("❌ Error fetching plants:", error);
         res.status(500).send({ message: "Failed to fetch plants" });
       }
     });
 
-    
     app.get("/api/plants/user/:email", async (req, res) => {
       try {
         const email = req.params.email;
         const plants = await plantsCollection.find({ userEmail: email }).toArray();
         res.send(plants);
       } catch (error) {
-        console.error("❌ Error fetching user's plants:", error);
         res.status(500).send({ message: "Failed to fetch user's plants" });
       }
     });
 
-    
     app.get("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -68,24 +58,20 @@ async function run() {
         if (!plant) return res.status(404).send({ message: "Plant not found" });
         res.send(plant);
       } catch (error) {
-        console.error("❌ Error fetching plant:", error);
         res.status(500).send({ message: "Failed to fetch plant" });
       }
     });
 
-  
     app.post("/api/plants", async (req, res) => {
       try {
         const newPlant = req.body;
         const result = await plantsCollection.insertOne(newPlant);
         res.status(201).send(result);
       } catch (error) {
-        console.error("❌ Error adding plant:", error);
         res.status(500).send({ message: "Failed to add plant" });
       }
     });
 
-    
     app.put("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -99,12 +85,10 @@ async function run() {
         }
         res.send({ message: "✅ Plant updated", result });
       } catch (error) {
-        console.error("❌ Error updating plant:", error);
         res.status(500).send({ message: "Failed to update plant" });
       }
     });
 
-    
     app.delete("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -114,7 +98,6 @@ async function run() {
         }
         res.send({ message: "🗑️ Plant deleted", result });
       } catch (error) {
-        console.error("❌ Error deleting plant:", error);
         res.status(500).send({ message: "Failed to delete plant" });
       }
     });
@@ -124,7 +107,6 @@ async function run() {
   }
 }
 run().catch(console.dir);
-
 
 app.get("/", (req, res) => {
   res.send("🌱 Plant Care Tracker backend is running!");
