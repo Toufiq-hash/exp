@@ -31,7 +31,7 @@ async function run() {
     
     app.get("/api/plants", async (req, res) => {
       try {
-        const result = await plantsCollection.find().toArray();
+        const result = //await plantsCollection.find().toArray();
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch plants" });
@@ -42,7 +42,7 @@ async function run() {
     app.get("/api/plants/user/:email", async (req, res) => {
       try {
         const email = req.params.email;
-        const plants = await plantsCollection.find({ userEmail: email }).toArray();
+        const plants = //await plantsCollection.find({ userEmail: email }).toArray();
         res.send(plants);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch user's plants" });
@@ -53,7 +53,7 @@ async function run() {
     app.get("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const plant = await plantsCollection.findOne({ _id: new ObjectId(id) });
+        const plant = //await plantsCollection.findOne({ _id: new ObjectId(id) });
         if (!plant) return res.status(404).send({ message: "Plant not found" });
         res.send(plant);
       } catch (error) {
@@ -65,7 +65,7 @@ async function run() {
     app.post("/api/plants", async (req, res) => {
       try {
         const newPlant = req.body;
-        const result = await plantsCollection.insertOne(newPlant);
+        const result = //await plantsCollection.insertOne(newPlant);
         res.status(201).send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to add plant" });
@@ -77,7 +77,7 @@ async function run() {
       try {
         const id = req.params.id;
         const updatedPlant = req.body;
-        const result = await plantsCollection.updateOne(
+        const result = //await plantsCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: updatedPlant }
         );
@@ -94,7 +94,7 @@ async function run() {
     app.delete("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const result = await plantsCollection.deleteOne({ _id: new ObjectId(id) });
+        const result = //await plantsCollection.deleteOne({ _id: new ObjectId(id) });
         if (result.deletedCount === 0) {
           return res.status(404).send({ message: "Plant not found" });
         }
@@ -112,7 +112,7 @@ run().catch(console.dir);
 
 
 app.get("/", (req, res) => {
-  res.send("🌱 Plant Care Tracker backend is running!");
+  res.send(" Plant Care Tracker backend is running!");
 });
 
 
