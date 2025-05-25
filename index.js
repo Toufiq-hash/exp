@@ -56,6 +56,7 @@ client.connect().then(() => {
       .catch(() => res.status(500).send({ message: "Failed to add plant" }));
   });
 
+  
   app.put("/api/plants/:id", (req, res) => {
     const id = req.params.id;
     const updatedPlant = req.body;
