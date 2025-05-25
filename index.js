@@ -8,7 +8,6 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-
 const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/plantdb?retryWrites=true&w=majority&appName=Cluster0";
 
 const client = new MongoClient(uri, {
@@ -20,9 +19,6 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
- 
-
-
 
 async function run() {
   try {
@@ -32,6 +28,7 @@ async function run() {
     const db = client.db("plantdb");
     const plantsCollection = db.collection("myplant");
 
+    
     app.get("/api/plants", async (req, res) => {
       try {
         const result = await plantsCollection.find().toArray();
@@ -41,6 +38,7 @@ async function run() {
       }
     });
 
+    
     app.get("/api/plants/user/:email", async (req, res) => {
       try {
         const email = req.params.email;
@@ -51,6 +49,7 @@ async function run() {
       }
     });
 
+  
     app.get("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -62,6 +61,7 @@ async function run() {
       }
     });
 
+    
     app.post("/api/plants", async (req, res) => {
       try {
         const newPlant = req.body;
@@ -71,6 +71,7 @@ async function run() {
         res.status(500).send({ message: "Failed to add plant" });
       }
     });
+
 
     app.put("/api/plants/:id", async (req, res) => {
       try {
@@ -89,6 +90,7 @@ async function run() {
       }
     });
 
+    
     app.delete("/api/plants/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -108,10 +110,17 @@ async function run() {
 }
 run().catch(console.dir);
 
+
 app.get("/", (req, res) => {
   res.send("🌱 Plant Care Tracker backend is running!");
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server is running on port ${port}`);
-});
+
+if (require.main === module) {
+  
+  app.listen(port, () => {
+    console.log(`🚀 Server is running on port ${port}`);
+  });
+}
+
+module.exports = app;
