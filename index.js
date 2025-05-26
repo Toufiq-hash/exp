@@ -1,3 +1,4 @@
+require("dotenv").config
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
@@ -6,8 +7,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// MongoDB URI
 const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/plantdb?retryWrites=true&w=majority&appName=Cluster0";
 
+// Cached DB connection
 let cachedClient = null;
 let cachedDb = null;
 
@@ -17,8 +20,6 @@ async function connectToDatabase() {
   }
 
   const client = new MongoClient(uri, {
-    ssl: true,
-    tlsAllowInvalidCertificates: false,
     serverApi: {
       version: ServerApiVersion.v1,
       strict: true,
@@ -26,44 +27,24 @@ async function connectToDatabase() {
     },
   });
 
-  await client.connect();
-  const db = client.db("plantdb");
+  // DO NOT use await client.connect(), ping, or client.close() in Express server
+  await client.connect(); // ✅ Needed once, don’t remove this from Express
 
+  const db = client.db("plantdb");
   cachedClient = client;
   cachedDb = db;
 
   return { client, db };
 }
 
+// Routes
 app.get("/api/plants", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const plants = await db.collection("myplant").find().toArray();
     res.send(plants);
-  } catch (error) {
-    console.error("❌ Error fetching plants:", error);
+  } catch (err) {
     res.status(500).send({ message: "Failed to fetch plants" });
-  }
-});
-
-app.get("/api/plants/:id", async (req, res) => {
-  try {
-    const { db } = await connectToDatabase();
-    const plant = await db.collection("myplant").findOne({ _id: new ObjectId(req.params.id) });
-    if (!plant) return res.status(404).send({ message: "Plant not found" });
-    res.send(plant);
-  } catch (error) {
-    res.status(500).send({ message: "Failed to fetch plant" });
-  }
-});
-
-app.get("/api/plants/user/:email", async (req, res) => {
-  try {
-    const { db } = await connectToDatabase();
-    const plants = await db.collection("myplant").find({ userEmail: req.params.email }).toArray();
-    res.send(plants);
-  } catch (error) {
-    res.status(500).send({ message: "Failed to fetch user's plants" });
   }
 });
 
@@ -73,7 +54,7 @@ app.post("/api/plants", async (req, res) => {
     const newPlant = req.body;
     const result = await db.collection("myplant").insertOne(newPlant);
     res.status(201).send(result);
-  } catch (error) {
+  } catch (err) {
     res.status(500).send({ message: "Failed to add plant" });
   }
 });
@@ -81,16 +62,14 @@ app.post("/api/plants", async (req, res) => {
 app.put("/api/plants/:id", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const updatedPlant = req.body;
+    const { id } = req.params;
+    const updatedData = req.body;
     const result = await db.collection("myplant").updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: updatedPlant }
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
     );
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "Plant not found" });
-    }
-    res.send({ message: "✅ Plant updated", result });
-  } catch (error) {
+    res.send(result);
+  } catch (err) {
     res.status(500).send({ message: "Failed to update plant" });
   }
 });
@@ -98,18 +77,17 @@ app.put("/api/plants/:id", async (req, res) => {
 app.delete("/api/plants/:id", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const result = await db.collection("myplant").deleteOne({ _id: new ObjectId(req.params.id) });
-    if (result.deletedCount === 0) {
-      return res.status(404).send({ message: "Plant not found" });
-    }
-    res.send({ message: "🗑️ Plant deleted", result });
-  } catch (error) {
+    const { id } = req.params;
+    const result = await db.collection("myplant").deleteOne({ _id: new ObjectId(id) });
+    res.send(result);
+  } catch (err) {
     res.status(500).send({ message: "Failed to delete plant" });
   }
 });
 
 app.get("/", (req, res) => {
-  res.send("🌱 Plant Care Tracker backend is running!");
+  res.send("🌿 Plant Care Tracker backend is running!");
 });
 
+// Export for Vercel
 module.exports = app;
