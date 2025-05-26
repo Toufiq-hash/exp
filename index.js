@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const serverless = require("serverless-http");
 
 const app = express();
 app.use(cors());
@@ -20,14 +21,16 @@ const client = new MongoClient(uri, {
 
 let plantsCollection;
 
-async function connectAndSetup() {
+// Wrap everything in an async init function
+async function init() {
   try {
     await client.connect();
+    console.log("✅ Connected to MongoDB");
+
     const db = client.db("plantdb");
     plantsCollection = db.collection("myplant");
-    console.log("Connected to MongoDB");
 
-    
+    // All routes should be defined *after* the DB is connected
     app.get("/api/plants", async (req, res) => {
       try {
         const result = await plantsCollection.find().toArray();
@@ -40,8 +43,8 @@ async function connectAndSetup() {
     app.get("/api/plants/user/:email", async (req, res) => {
       try {
         const email = req.params.email;
-        const plants = await plantsCollection.find({ userEmail: email }).toArray();
-        res.send(plants);
+        const result = await plantsCollection.find({ userEmail: email }).toArray();
+        res.send(result);
       } catch {
         res.status(500).send({ message: "Failed to fetch user's plants" });
       }
@@ -63,7 +66,7 @@ async function connectAndSetup() {
         const newPlant = req.body;
         const result = await plantsCollection.insertOne(newPlant);
         res.status(201).send(result);
-      } catch  {
+      } catch {
         res.status(500).send({ message: "Failed to add plant" });
       }
     });
@@ -79,8 +82,8 @@ async function connectAndSetup() {
         if (result.matchedCount === 0) {
           return res.status(404).send({ message: "Plant not found" });
         }
-        res.send({ message: " Plant updated", result });
-      } catch  {
+        res.send({ message: "✅ Plant updated", result });
+      } catch {
         res.status(500).send({ message: "Failed to update plant" });
       }
     });
@@ -92,21 +95,21 @@ async function connectAndSetup() {
         if (result.deletedCount === 0) {
           return res.status(404).send({ message: "Plant not found" });
         }
-        res.send({ message: " Plant deleted", result });
-      } catch  {
+        res.send({ message: "🗑️ Plant deleted", result });
+      } catch {
         res.status(500).send({ message: "Failed to delete plant" });
       }
     });
 
-  } catch {
-    console.error(" MongoDB connection failed:", err);
+    app.get("/api", (req, res) => {
+      res.send("🌱 Plant Care Tracker backend is running!");
+    });
+
+  } catch (error) {
+    console.error("❌ Failed to connect to MongoDB:", error);
   }
 }
 
-connectAndSetup();
+init();
 
-app.get("/", (req, res) => {
-  res.send(" Plant Care Tracker backend is running!");
-});
-
-module.exports = app;
+module.exports = serverless(app);

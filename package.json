@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-      "dev": "vercel dev"
+    "dev": "vercel dev"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +14,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
-    "mongodb": "^6.16.0"
+    "mongodb": "^6.16.0",
+    "serverless-http": "^3.2.0"
   }
 }
