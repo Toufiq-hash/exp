@@ -7,10 +7,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB URI
+
 const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/plantdb?retryWrites=true&w=majority&appName=Cluster0";
 
-// Cached DB connection
+
 let cachedClient = null;
 let cachedDb = null;
 
@@ -27,8 +27,8 @@ async function connectToDatabase() {
     },
   });
 
-  // DO NOT use await client.connect(), ping, or client.close() in Express server
-  await client.connect(); // ✅ Needed once, don’t remove this from Express
+  
+  await client.connect(); 
 
   const db = client.db("plantdb");
   cachedClient = client;
@@ -37,7 +37,7 @@ async function connectToDatabase() {
   return { client, db };
 }
 
-// Routes
+
 app.get("/api/plants", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
@@ -86,8 +86,7 @@ app.delete("/api/plants/:id", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.send("🌿 Plant Care Tracker backend is running!");
+  res.send(" Plant Care Tracker backend is running!");
 });
 
-// Export for Vercel
 module.exports = app;
