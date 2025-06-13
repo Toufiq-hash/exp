@@ -28,7 +28,7 @@ async function connectToDatabase() {
   await client.connect();
 
   const db = client.db("plantdb");
-  cachedClient = client;
+  cachedClient = client; 
   cachedDb = db;
 
   return { client, db };
