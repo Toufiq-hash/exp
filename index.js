@@ -50,6 +50,21 @@ app.get("/queries", async (req, res) => {
   }
 });
 
+// ✅ NEW: GET queries by user email
+app.get("/queries/user/:email", async (req, res) => {
+  try {
+    const { db } = await connectToDatabase();
+    const email = req.params.email;
+    const userQueries = await db.collection("myproduct").find({
+      type: "query",
+      userEmail: email
+    }).toArray();
+    res.send(userQueries);
+  } catch (err) {
+    res.status(500).send({ message: "Failed to fetch queries by user" });
+  }
+});
+
 // GET query by ID
 app.get("/queries/:id", async (req, res) => {
   try {
@@ -68,7 +83,7 @@ app.post("/queries", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const newQuery = req.body;
-    newQuery.type = "query"; // Mark as query
+    newQuery.type = "query";
     const result = await db.collection("myproduct").insertOne(newQuery);
     res.status(201).send(result);
   } catch (err) {
@@ -111,7 +126,7 @@ app.post("/recommendations", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const newRecommendation = req.body;
-    newRecommendation.type = "recommendation"; // Mark as recommendation
+    newRecommendation.type = "recommendation";
     const result = await db.collection("myproduct").insertOne(newRecommendation);
     res.status(201).send(result);
   } catch (err) {
@@ -134,14 +149,14 @@ app.get("/recommendations/query/:queryId", async (req, res) => {
   }
 });
 
-// GET all recommendations made by a user (filter by recommender's email)
+// GET all recommendations made by a user
 app.get("/my-recommendations/:email", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const email = req.params.email;
     const recommendations = await db.collection("myproduct").find({
       type: "recommendation",
-      recommenderEmail: email // assuming this field in doc
+      recommenderEmail: email
     }).toArray();
     res.send(recommendations);
   } catch (err) {
@@ -154,16 +169,14 @@ app.get("/recommendations-for-me/:email", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const email = req.params.email;
-    
-    // Find query IDs of user's queries first
+
     const userQueries = await db.collection("myproduct").find({
       type: "query",
-      userEmail: email  // assuming this field in query doc
-    }).project({_id: 1}).toArray();
+      userEmail: email
+    }).project({ _id: 1 }).toArray();
 
     const queryIds = userQueries.map(q => q._id.toString());
 
-    // Then find recommendations for those queries
     const recommendations = await db.collection("myproduct").find({
       type: "recommendation",
       queryId: { $in: queryIds }
