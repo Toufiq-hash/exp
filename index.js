@@ -50,7 +50,7 @@ app.get("/queries", async (req, res) => {
   }
 });
 
-// ✅ NEW: GET queries by user email
+// GET queries by user email
 app.get("/queries/user/:email", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
@@ -84,6 +84,7 @@ app.post("/queries", async (req, res) => {
     const { db } = await connectToDatabase();
     const newQuery = req.body;
     newQuery.type = "query";
+    newQuery.recommendationsCount = 0; // initialize count
     const result = await db.collection("myproduct").insertOne(newQuery);
     res.status(201).send(result);
   } catch (err) {
@@ -121,13 +122,21 @@ app.delete("/queries/:id", async (req, res) => {
 
 // ====== Recommendations Routes ======
 
-// POST add a recommendation
+// POST add a recommendation and increment recommendationsCount
 app.post("/recommendations", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const newRecommendation = req.body;
     newRecommendation.type = "recommendation";
+
     const result = await db.collection("myproduct").insertOne(newRecommendation);
+
+    // Increment recommendationsCount on the related query
+    await db.collection("myproduct").updateOne(
+      { _id: new ObjectId(newRecommendation.queryId), type: "query" },
+      { $inc: { recommendationsCount: 1 } }
+    );
+
     res.status(201).send(result);
   } catch (err) {
     res.status(500).send({ message: "Failed to add recommendation" });
@@ -188,15 +197,32 @@ app.get("/recommendations-for-me/:email", async (req, res) => {
   }
 });
 
-// DELETE recommendation by ID
+// DELETE recommendation and decrement recommendationsCount
 app.delete("/recommendations/:id", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const { id } = req.params;
-    const result = await db.collection("myproduct").deleteOne({ _id: new ObjectId(id), type: "recommendation" });
-    res.send(result);
+
+    // Find recommendation to get queryId
+    const recommendation = await db.collection("myproduct").findOne({
+      _id: new ObjectId(id),
+      type: "recommendation"
+    });
+
+    if (!recommendation) return res.status(404).send({ message: "Recommendation not found" });
+
+    // Delete recommendation
+    await db.collection("myproduct").deleteOne({ _id: new ObjectId(id), type: "recommendation" });
+
+    // Decrement count
+    await db.collection("myproduct").updateOne(
+      { _id: new ObjectId(recommendation.queryId), type: "query" },
+      { $inc: { recommendationsCount: -1 } }
+    );
+
+    res.send({ message: "Recommendation deleted and count updated" });
   } catch (err) {
-    res.status(500).send({ message: "Failed to delete recommendation" });
+    res.status(500).send({ message: "Failed to delete recommendation", error: err.message });
   }
 });
 
