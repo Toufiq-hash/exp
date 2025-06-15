@@ -1,23 +1,32 @@
-require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
 const admin = require("firebase-admin");
-const serviceAccount = require("./serviceAccountKey.json");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin
+// === Firebase Admin Init with Inlined Service Account ===
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert({
+    type: "service_account",
+    project_id: "as10-46d29",
+    private_key_id: "c4209cd6400bad8d8f165692df8d00e15c6e18e4",
+    private_key: "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkq...your_full_key...\n-----END PRIVATE KEY-----\n",
+    client_email: "firebase-adminsdk-fbsvc@as10-46d29.iam.gserviceaccount.com",
+    client_id: "113668680542680694175",
+    auth_uri: "https://accounts.google.com/o/oauth2/auth",
+    token_uri: "https://oauth2.googleapis.com/token",
+    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+    client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40as10-46d29.iam.gserviceaccount.com",
+    universe_domain: "googleapis.com"
+  }),
 });
 
-// Middleware to verify Firebase JWT
+// === Firebase Token Middleware ===
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-
   if (!authHeader?.startsWith("Bearer ")) {
     return res.status(401).send({ message: "Unauthorized: No token provided" });
   }
@@ -33,8 +42,8 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
+// === MongoDB Setup ===
 const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/product?retryWrites=true&w=majority&appName=Cluster0";
-
 let cachedClient = null;
 let cachedDb = null;
 
@@ -44,11 +53,7 @@ async function connectToDatabase() {
   }
 
   const client = new MongoClient(uri, {
-    serverApi: {
-      version: ServerApiVersion.v1,
-      strict: true,
-      deprecationErrors: true,
-    },
+    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
   });
 
   await client.connect();
@@ -58,12 +63,10 @@ async function connectToDatabase() {
   return { client, db };
 }
 
-// Root route
+// === Routes ===
 app.get("/", (req, res) => {
   res.send("Product Recommendation backend is running!");
 });
-
-// ====== Queries Routes ======
 
 // GET all queries
 app.get("/queries", async (req, res) => {
@@ -81,12 +84,9 @@ app.get("/queries/user/:email", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const email = req.params.email;
-    const userQueries = await db.collection("myproduct").find({
-      type: "query",
-      userEmail: email
-    }).toArray();
+    const userQueries = await db.collection("myproduct").find({ type: "query", userEmail: email }).toArray();
     res.send(userQueries);
-  } catch (err) {
+  } catch {
     res.status(500).send({ message: "Failed to fetch queries by user" });
   }
 });
@@ -99,7 +99,7 @@ app.get("/queries/:id", async (req, res) => {
     const query = await db.collection("myproduct").findOne({ _id: new ObjectId(id), type: "query" });
     if (!query) return res.status(404).send({ message: "Query not found" });
     res.send(query);
-  } catch (err) {
+  } catch {
     res.status(500).send({ message: "Failed to fetch query by ID" });
   }
 });
@@ -110,11 +110,11 @@ app.post("/queries", verifyToken, async (req, res) => {
     const { db } = await connectToDatabase();
     const newQuery = req.body;
     newQuery.type = "query";
-    newQuery.userEmail = req.user.email; // save user email from token
+    newQuery.userEmail = req.user.email;
     newQuery.recommendationsCount = 0;
     const result = await db.collection("myproduct").insertOne(newQuery);
     res.status(201).send(result);
-  } catch (err) {
+  } catch {
     res.status(500).send({ message: "Failed to add query" });
   }
 });
@@ -123,14 +123,13 @@ app.post("/queries", verifyToken, async (req, res) => {
 app.put("/queries/:id", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const { id } = req.params;
     const updatedData = req.body;
     const result = await db.collection("myproduct").updateOne(
-      { _id: new ObjectId(id), type: "query" },
+      { _id: new ObjectId(req.params.id), type: "query" },
       { $set: updatedData }
     );
     res.send(result);
-  } catch (err) {
+  } catch {
     res.status(500).send({ message: "Failed to update query" });
   }
 });
@@ -139,105 +138,94 @@ app.put("/queries/:id", async (req, res) => {
 app.delete("/queries/:id", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const { id } = req.params;
-    const result = await db.collection("myproduct").deleteOne({ _id: new ObjectId(id), type: "query" });
+    const result = await db.collection("myproduct").deleteOne({ _id: new ObjectId(req.params.id), type: "query" });
     res.send(result);
-  } catch (err) {
+  } catch {
     res.status(500).send({ message: "Failed to delete query" });
   }
 });
 
-// ====== Recommendations Routes ======
-
-// POST add a recommendation and increment recommendationsCount
+// POST add recommendation
 app.post("/recommendations", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const newRecommendation = req.body;
-    newRecommendation.type = "recommendation";
+    const newRec = req.body;
+    newRec.type = "recommendation";
 
-    const result = await db.collection("myproduct").insertOne(newRecommendation);
-
-    // Increment recommendationsCount on the related query
+    const result = await db.collection("myproduct").insertOne(newRec);
     await db.collection("myproduct").updateOne(
-      { _id: new ObjectId(newRecommendation.queryId), type: "query" },
+      { _id: new ObjectId(newRec.queryId), type: "query" },
       { $inc: { recommendationsCount: 1 } }
     );
 
     res.status(201).send(result);
-  } catch (err) {
+  } catch {
     res.status(500).send({ message: "Failed to add recommendation" });
   }
 });
 
-// GET recommendations for a specific query ID
+// GET recommendations by query ID
 app.get("/recommendations/query/:queryId", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const queryId = req.params.queryId;
-    const recommendations = await db.collection("myproduct").find({
+    const recs = await db.collection("myproduct").find({
       type: "recommendation",
-      queryId: queryId
+      queryId: req.params.queryId,
     }).toArray();
-    res.send(recommendations);
-  } catch (err) {
-    res.status(500).send({ message: "Failed to fetch recommendations for query" });
+    res.send(recs);
+  } catch {
+    res.status(500).send({ message: "Failed to fetch recommendations" });
   }
 });
 
-// GET all recommendations made by a user
+// GET user's recommendations
 app.get("/my-recommendations/:email", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const email = req.params.email;
-    const recommendations = await db.collection("myproduct").find({
+    const recs = await db.collection("myproduct").find({
       type: "recommendation",
-      recommenderEmail: email
+      recommenderEmail: req.params.email,
     }).toArray();
-    res.send(recommendations);
-  } catch (err) {
+    res.send(recs);
+  } catch {
     res.status(500).send({ message: "Failed to fetch user's recommendations" });
   }
 });
 
-// GET recommendations received on the user's queries
+// GET recommendations for user’s queries
 app.get("/recommendations-for-me/:email", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const email = req.params.email;
-
     const userQueries = await db.collection("myproduct").find({
       type: "query",
-      userEmail: email
+      userEmail: req.params.email,
     }).project({ _id: 1 }).toArray();
 
     const queryIds = userQueries.map(q => q._id.toString());
 
-    const recommendations = await db.collection("myproduct").find({
+    const recs = await db.collection("myproduct").find({
       type: "recommendation",
       queryId: { $in: queryIds }
     }).toArray();
 
-    res.send(recommendations);
-  } catch (err) {
+    res.send(recs);
+  } catch {
     res.status(500).send({ message: "Failed to fetch recommendations for user" });
   }
 });
 
-// DELETE recommendation and decrement recommendationsCount
+// DELETE recommendation
 app.delete("/recommendations/:id", async (req, res) => {
   try {
     const { db } = await connectToDatabase();
-    const { id } = req.params;
-
     const recommendation = await db.collection("myproduct").findOne({
-      _id: new ObjectId(id),
+      _id: new ObjectId(req.params.id),
       type: "recommendation"
     });
 
     if (!recommendation) return res.status(404).send({ message: "Recommendation not found" });
 
-    await db.collection("myproduct").deleteOne({ _id: new ObjectId(id), type: "recommendation" });
+    await db.collection("myproduct").deleteOne({ _id: new ObjectId(req.params.id) });
 
     await db.collection("myproduct").updateOne(
       { _id: new ObjectId(recommendation.queryId), type: "query" },
@@ -250,4 +238,5 @@ app.delete("/recommendations/:id", async (req, res) => {
   }
 });
 
+// === Export for Vercel ===
 module.exports = app;
