@@ -2,10 +2,36 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
+const admin = require("firebase-admin");
+const serviceAccount = require("./serviceAccountKey.json");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Initialize Firebase Admin
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+// Middleware to verify Firebase JWT
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "Unauthorized: No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(403).send({ message: "Forbidden: Invalid token" });
+  }
+};
 
 const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/product?retryWrites=true&w=majority&appName=Cluster0";
 
@@ -78,13 +104,14 @@ app.get("/queries/:id", async (req, res) => {
   }
 });
 
-// POST new query
-app.post("/queries", async (req, res) => {
+// POST new query (Protected by JWT)
+app.post("/queries", verifyToken, async (req, res) => {
   try {
     const { db } = await connectToDatabase();
     const newQuery = req.body;
     newQuery.type = "query";
-    newQuery.recommendationsCount = 0; // initialize count
+    newQuery.userEmail = req.user.email; // save user email from token
+    newQuery.recommendationsCount = 0;
     const result = await db.collection("myproduct").insertOne(newQuery);
     res.status(201).send(result);
   } catch (err) {
@@ -203,7 +230,6 @@ app.delete("/recommendations/:id", async (req, res) => {
     const { db } = await connectToDatabase();
     const { id } = req.params;
 
-    // Find recommendation to get queryId
     const recommendation = await db.collection("myproduct").findOne({
       _id: new ObjectId(id),
       type: "recommendation"
@@ -211,10 +237,8 @@ app.delete("/recommendations/:id", async (req, res) => {
 
     if (!recommendation) return res.status(404).send({ message: "Recommendation not found" });
 
-    // Delete recommendation
     await db.collection("myproduct").deleteOne({ _id: new ObjectId(id), type: "recommendation" });
 
-    // Decrement count
     await db.collection("myproduct").updateOne(
       { _id: new ObjectId(recommendation.queryId), type: "query" },
       { $inc: { recommendationsCount: -1 } }
