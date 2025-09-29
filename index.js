@@ -31,23 +31,36 @@ let usersCollection, mealsCollection, reviewsCollection, upcomingMealsCollection
 
 async function connectToMongo() {
   if (!usersCollection) {
-    try {
-      console.log("Attempting MongoDB connection with URI:", uri ? "Set" : "Missing");
-      await client.connect();
-      console.log("MongoDB client connected");
-      const db = client.db("hostel");
-      usersCollection = db.collection("users");
-      mealsCollection = db.collection("meals");
-      reviewsCollection = db.collection("reviews");
-      upcomingMealsCollection = db.collection("upcomingMeals");
-      ordersCollection = db.collection("orders");
-      paymentsCollection = db.collection("payments");
-      console.log("✅ Connected to MongoDB, collections initialized");
-      // Verify collections
-      if (!mealsCollection) throw new Error("Meals collection not initialized");
-    } catch (err) {
-      console.error("❌ MongoDB connection error:", err.message, err.stack);
-      throw new Error(`MongoDB connection failed: ${err.message}`);
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        console.log(`Attempting MongoDB connection (retries left: ${retries}) with URI:`, process.env.MONGODB_URI ? "Set" : "Missing");
+        await client.connect();
+        console.log("MongoDB client connected");
+        const db = client.db("hostel");
+        usersCollection = db.collection("users");
+        mealsCollection = db.collection("meals");
+        reviewsCollection = db.collection("reviews");
+        upcomingMealsCollection = db.collection("upcomingMeals");
+        ordersCollection = db.collection("orders");
+        paymentsCollection = db.collection("payments");
+        // Verify all collections
+        const collections = [usersCollection, mealsCollection, reviewsCollection, upcomingMealsCollection, ordersCollection, paymentsCollection];
+        for (const collection of collections) {
+          if (!collection) {
+            throw new Error(`Collection ${collection} not initialized`);
+          }
+        }
+        console.log("✅ Connected to MongoDB, all collections initialized");
+        return client;
+      } catch (err) {
+        console.error(`❌ MongoDB connection attempt failed: ${err.message}`);
+        retries--;
+        if (retries === 0) {
+          throw new Error(`MongoDB connection failed after retries: ${err.message}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+      }
     }
   }
   return client;
