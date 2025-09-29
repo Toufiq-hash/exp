@@ -1,12 +1,9 @@
-// server.js (Vercel Serverless)
-
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId } = require("mongodb");
 const dotenv = require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
-const serverless = require("serverless-http");
 
 const app = express();
 
@@ -20,11 +17,14 @@ app.use((req, res, next) => {
 
 // MongoDB setup
 const uri = process.env.MONGODB_URI;
-if (!uri) throw new Error("MONGODB_URI is not defined");
+if (!uri) {
+  console.error("MONGODB_URI is not defined");
+  process.exit(1);
+}
 
 const client = new MongoClient(uri, {
-  connectTimeoutMS: 10000,
-  serverSelectionTimeoutMS: 10000,
+  connectTimeoutMS: 5000,
+  serverSelectionTimeoutMS: 5000,
 });
 
 let usersCollection, mealsCollection, reviewsCollection, upcomingMealsCollection, ordersCollection, paymentsCollection;
@@ -42,7 +42,7 @@ async function connectToMongo() {
       paymentsCollection = db.collection("payments");
       console.log("✅ Connected to MongoDB");
     } catch (err) {
-      console.error("❌ MongoDB connection error:", err);
+      console.error("❌ MongoDB connection error:", err.message, err.stack);
       throw err;
     }
   }
@@ -111,8 +111,6 @@ const isValidUrl = (url) => {
 };
 
 // Routes
-
-// JWT generation
 app.post("/jwt", (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ message: "Email required" });
@@ -120,13 +118,11 @@ app.post("/jwt", (req, res) => {
   res.json({ token });
 });
 
-// Login
 app.post("/login", async (req, res) => {
   try {
     await connectToMongo();
     const { idToken, email } = req.body;
     if (!idToken || !email) return res.status(400).json({ message: "ID token and email required" });
-
     const normalizedEmail = email.toLowerCase();
     let user = await usersCollection.findOne({ email: normalizedEmail });
     if (!user) {
@@ -140,7 +136,6 @@ app.post("/login", async (req, res) => {
       });
       user = { ...user, _id: result.insertedId };
     }
-
     const token = jwt.sign({ email: normalizedEmail }, process.env.JWT_SECRET, { expiresIn: "70d" });
     res.json({ token });
   } catch (err) {
@@ -149,7 +144,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// Add User
 app.post("/users", async (req, res) => {
   try {
     await connectToMongo();
@@ -172,7 +166,6 @@ app.post("/users", async (req, res) => {
   }
 });
 
-// Root route
 app.get("/", (req, res) => res.json("✅ HostelMate Server is Running"));
 
 // Global error handler
@@ -181,5 +174,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Server error", error: err.message });
 });
 
-// Vercel export
-module.exports = serverless(app);
+// Start server for Render
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`✅ Server running on port ${port}`));
