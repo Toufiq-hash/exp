@@ -6,22 +6,37 @@ const dotenv = require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
 const app = express();
-const port = process.env.PORT || 5000;
 
-console.log("Loaded STRIPE_SECRET:", process.env.STRIPE_SECRET ? "Set" : "Not set");
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-// MongoDB URI
+// Log requests for debugging
+app.use((req, res, next) => {
+  console.log(`🛰️ [${req.method}] ${req.originalUrl}`);
+  next();
+});
+
+// MongoDB URI and Client
 const uri = process.env.MONGODB_URI;
+if (!uri) {
+  console.error("MONGODB_URI is not defined");
+  throw new Error("MONGODB_URI is not defined");
+}
 
-let client;
+const client = new MongoClient(uri, {
+  connectTimeoutMS: 10000, // 10s timeout
+  serverSelectionTimeoutMS: 10000,
+});
 
-// Package details for payment processing
+// Package details
 const packageDetails = {
   silver: { name: "Silver", price: 999, description: "Access to premium meal features and upcoming meals." },
   gold: { name: "Gold", price: 1999, description: "Enhanced meal options and priority support." },
   platinum: { name: "Platinum", price: 2999, description: "Full access with exclusive perks." },
 };
 
+// Initialize collections globally (but connect on-demand)
 let usersCollection,
   mealsCollection,
   reviewsCollection,
@@ -29,50 +44,36 @@ let usersCollection,
   ordersCollection,
   paymentsCollection;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use((req, res, next) => {
-  console.log(`🛰️ [${req.method}] ${req.originalUrl}`);
-  next();
-});
-
-// Connect to MongoDB per request (serverless friendly)
-const getClient = async () => {
-  if (!client) {
-    console.log("Initializing MongoDB connection");
-    client = new MongoClient(uri, {
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      connectTimeoutMS: 10000,
-      retryWrites: true,
-      w: "majority",
-    });
-    await client.connect();
-    console.log("✅ Connected to MongoDB");
-
-    const db = client.db("hostel");
-    usersCollection = db.collection("users");
-    mealsCollection = db.collection("meals");
-    reviewsCollection = db.collection("reviews");
-    upcomingMealsCollection = db.collection("upcomingMeals");
-    ordersCollection = db.collection("orders");
-    paymentsCollection = db.collection("payments");
-
-    console.log("Collections initialized:", {
-      users: !!usersCollection,
-      meals: !!mealsCollection,
-      reviews: !!reviewsCollection,
-      upcomingMeals: !!upcomingMealsCollection,
-      orders: !!ordersCollection,
-      payments: !!paymentsCollection,
-    });
+// Connect to MongoDB on-demand
+async function connectToMongo() {
+  if (!usersCollection) {
+    try {
+      await client.connect();
+      const db = client.db("hostel");
+      usersCollection = db.collection("users");
+      mealsCollection = db.collection("meals");
+      reviewsCollection = db.collection("reviews");
+      upcomingMealsCollection = db.collection("upcomingMeals");
+      ordersCollection = db.collection("orders");
+      paymentsCollection = db.collection("payments");
+      console.log("✅ Connected to MongoDB");
+      console.log("Collections initialized:", {
+        users: !!usersCollection,
+        meals: !!mealsCollection,
+        reviews: !!reviewsCollection,
+        upcomingMeals: !!upcomingMealsCollection,
+        orders: !!ordersCollection,
+        payments: !!paymentsCollection,
+      });
+    } catch (err) {
+      console.error("❌ MongoDB connection error:", err);
+      throw err;
+    }
   }
   return client;
-};
+}
 
-// In each route, call getClient() to ensure connection
+// Middleware for JWT verification
 const verifyJWT = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
@@ -91,9 +92,10 @@ const verifyJWT = (req, res, next) => {
   });
 };
 
+// Admin verification middleware
 const verifyAdmin = async (req, res, next) => {
   try {
-    await getClient();
+    await connectToMongo();
     const user = await usersCollection.findOne(
       { email: req.user.email },
       { collation: { locale: "en", strength: 2 } }
@@ -109,9 +111,10 @@ const verifyAdmin = async (req, res, next) => {
   }
 };
 
+// Duplicate review restriction
 const restrictDuplicateReview = async (req, res, next) => {
   try {
-    await getClient();
+    await connectToMongo();
     const { mealId, userEmail } = req.body;
     console.log(`Checking duplicate review for mealId: ${mealId}, userEmail: ${userEmail}`);
     if (!ObjectId.isValid(mealId)) {
@@ -133,9 +136,10 @@ const restrictDuplicateReview = async (req, res, next) => {
   }
 };
 
+// Duplicate request restriction
 const restrictDuplicateRequest = async (req, res, next) => {
   try {
-    await getClient();
+    await connectToMongo();
     const { mealId } = req.body;
     const userEmail = req.user.email;
     console.log(`Checking duplicate request for mealId: ${mealId}, userEmail: ${userEmail}`);
@@ -158,6 +162,7 @@ const restrictDuplicateRequest = async (req, res, next) => {
   }
 };
 
+// URL validation
 const isValidUrl = (url) => {
   try {
     new URL(url);
@@ -167,19 +172,24 @@ const isValidUrl = (url) => {
   }
 };
 
-// JWT
-app.post("/jwt", (req, res) => {
-  const user = req.body;
-  if (!user?.email) return res.status(400).json({ message: "Email required" });
-  const token = jwt.sign({ email: user.email.toLowerCase() }, process.env.JWT_SECRET, { expiresIn: "70d" });
-  console.log(`JWT generated for ${user.email.toLowerCase()}`);
-  res.json({ token });
+// Routes (same as your original code, with connectToMongo added where needed)
+app.post("/jwt", async (req, res) => {
+  try {
+    const user = req.body;
+    if (!user?.email) return res.status(400).json({ message: "Email required" });
+    const token = jwt.sign({ email: user.email.toLowerCase() }, process.env.JWT_SECRET, { expiresIn: "70d" });
+    console.log(`JWT generated for ${user.email.toLowerCase()}`);
+    res.json({ token });
+  } catch (err) {
+    console.error("Error in JWT generation:", err);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 // Login
 app.post("/login", async (req, res) => {
   try {
-    await getClient();
+    await connectToMongo();
     const { idToken, email } = req.body;
     if (!idToken || !email) {
       console.log(`Missing required fields: idToken=${!!idToken}, email=${email}`);
@@ -217,709 +227,708 @@ app.post("/login", async (req, res) => {
 
 // Users
 app.post("/users", async (req, res) => {
-  try {
-    await getClient();
-    const user = req.body;
-    if (!user?.email || !user?.name) {
-      console.log(`Missing required fields: email=${user?.email}, name=${user?.name}`);
-      return res.status(400).json({ message: "Name and email are required" });
-    }
-    const exists = await usersCollection.findOne(
-      { email: user.email.toLowerCase() },
-      { collation: { locale: "en", strength: 2 } }
-    );
-    if (exists) {
-      console.log(`User already exists: ${user.email.toLowerCase()}`);
-      return res.status(409).json({ message: "User exists" });
-    }
-    const result = await usersCollection.insertOne({
-      name: user.name,
-      email: user.email.toLowerCase(),
-      photoURL: user.photoURL || null,
-      role: user.role || "user",
-      googleAuth: user.googleAuth || false,
-      createdAt: new Date(),
-    });
-    console.log(`User created: ${user.email.toLowerCase()}, Google: ${user.googleAuth || false}`);
-    res.status(201).json({ success: true, insertedId: result.insertedId });
-  } catch (err) {
-    console.error("Error creating user:", { message: err.message, stack: err.stack });
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    await getClient();
-    const users = await usersCollection.find().toArray();
-    res.json(users);
-  } catch (err) {
-    console.error("Error fetching users:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.get("/users/:email", verifyJWT, async (req, res) => {
-  try {
-    await getClient();
-    const user = await usersCollection.findOne(
-      { email: req.params.email.toLowerCase() },
-      { collation: { locale: "en", strength: 2 } }
-    );
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
-  } catch (err) {
-    console.error("Error fetching user:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.get("/users/admin/:email", verifyJWT, async (req, res) => {
-  try {
-    await getClient();
-    const user = await usersCollection.findOne(
-      { email: req.params.email.toLowerCase() },
-      { collation: { locale: "en", strength: 2 } }
-    );
-    res.json({ isAdmin: user?.role === "admin" });
-  } catch (err) {
-    console.error("Error checking admin status:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.patch("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    await getClient();
-    if (!ObjectId.isValid(req.params.id)) {
-      console.log(`Invalid user ID: ${req.params.id}`);
-      return res.status(400).json({ message: "Invalid user ID" });
-    }
-    const result = await usersCollection.updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { role: "admin" } }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    res.json(result);
-  } catch (err) {
-    console.error("Error updating admin role:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.delete("/users/:id", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    await getClient();
-    if (!ObjectId.isValid(req.params.id)) {
-      console.log(`Invalid user ID: ${req.params.id}`);
-      return res.status(400).json({ message: "Invalid user ID" });
-    }
-    const result = await usersCollection.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: "User not found" });
-    }
-    res.json(result);
-  } catch (err) {
-    console.error("Error deleting user:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
- // Meals
-app.get("/meals", async (req, res) => {
-  try {
-    const { category, minPrice, maxPrice, search, page = 1, limit = 6 } = req.query;
-    const query = {};
-
-    if (category && category !== "All") {
-      query.category = category;
-    }
-
-    if (minPrice || maxPrice) {
-      query.price = {};
-      if (minPrice) query.price.$gte = Number(minPrice);
-      if (maxPrice) query.price.$lte = Number(maxPrice);
-    }
-
-    if (search) {
-      query.title = { $regex: search, $options: "i" };
-    }
-
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 6;
-    const skip = (pageNum - 1) * limitNum;
-
-    const meals = await mealsCollection
-      .find(query)
-      .skip(skip)
-      .limit(limitNum)
-      .toArray();
-
-    const total = await mealsCollection.countDocuments(query);
-
-    res.json({
-      meals,
-      total,
-      page: pageNum,
-      limit: limitNum,
-      totalPages: Math.ceil(total / limitNum),
-    });
-  } catch (err) {
-    console.error("Error fetching meals:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.post("/meals", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    const meal = req.body;
-    const requiredFields = ["title", "category", "price", "description", "ingredients"];
-    const missingFields = requiredFields.filter((field) => !meal[field]);
-    if (missingFields.length > 0) {
-      return res.status(400).json({ message: `Missing required fields: ${missingFields.join(", ")}` });
-    }
-    meal.distributorName = meal.distributorName || "Hostel Kitchen";
-    if (meal.photoUrl && !isValidUrl(meal.photoUrl)) {
-      return res.status(400).json({ message: "Invalid photoUrl" });
-    }
-    meal.ingredients = Array.isArray(meal.ingredients) ? meal.ingredients : [];
-    meal.price = Number(meal.price);
-    meal.likedBy = meal.likedBy || [];
-    meal.rating = meal.rating || 0;
-    meal.reviews_count = meal.reviews_count || 0;
-    meal.postTime = meal.postTime ? new Date(meal.postTime) : new Date();
-    const result = await mealsCollection.insertOne(meal);
-    console.log(`Meal created: ${meal.title}, ID: ${result.insertedId}`);
-    res.status(201).json(result);
-  } catch (err) {
-    console.error("Error creating meal:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// Meals Stats
-app.get("/meals/stats", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    console.log("Fetching meal stats for admin", { userEmail: req.user.email });
-
-    const validMealIds = await mealsCollection
-      .find({}, { projection: { _id: 1 } })
-      .toArray()
-      .then((meals) => meals.map((m) => m._id.toString()));
-
-    console.log("Valid meal IDs:", { count: validMealIds.length, ids: validMealIds });
-
-    const invalidReviews = await reviewsCollection
-      .find(
-        { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
-        { projection: { _id: 1, mealId: 1, userEmail: 1 } }
-      )
-      .toArray();
-    if (invalidReviews.length > 0) {
-      console.warn("Found invalid mealIds in reviewsCollection:", {
-        count: invalidReviews.length,
-        invalidIds: invalidReviews.map((r) => ({ _id: r._id.toString(), mealId: r.mealId, userEmail: r.userEmail })),
-      });
-    }
-
-    const invalidOrders = await ordersCollection
-      .find(
-        { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
-        { projection: { _id: 1, mealId: 1, userEmail: 1 } }
-      )
-      .toArray();
-    if (invalidOrders.length > 0) {
-      console.warn("Found invalid mealIds in ordersCollection:", {
-        count: invalidOrders.length,
-        invalidIds: invalidOrders.map((o) => ({ _id: o._id.toString(), mealId: o.mealId, userEmail: o.userEmail })),
-      });
-    }
-
-    const stats = await mealsCollection
-      .aggregate([
-        {
-          $lookup: {
-            from: "reviews",
-            let: { mealId: "$_id" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [
-                      { $eq: ["$mealId", { $toString: "$$mealId" }] },
-                      { $regexMatch: { input: "$mealId", regex: /^[0-9a-fA-F]{24}$/ } },
-                      { $in: ["$mealId", validMealIds] },
-                    ],
-                  },
-                },
-              },
-            ],
-            as: "reviews",
-          },
-        },
-        {
-          $addFields: {
-            likes: { $size: { $ifNull: ["$likedBy", []] } },
-          },
-        },
-        {
-          $project: {
-            _id: 1,
-            title: 1,
-            likes: 1,
-            reviewCount: { $size: "$reviews" },
-            rating: { $avg: "$reviews.rating" },
-          },
-        },
-      ])
-      .toArray();
-
-    console.log(`Fetched meal stats, count: ${stats.length}`, {
-      titles: stats.map((s) => s.title),
-      ids: stats.map((s) => s._id.toString()),
-    });
-    res.json(stats);
-  } catch (err) {
-    console.error("Error fetching meal stats:", {
-      message: err.message,
-      stack: err.stack,
-    });
-    if (err.name === "BSONError") {
-      return res.status(400).json({ message: "Invalid meal ID format in database" });
-    }
-    res.status(500).json({ message: "Server error", error: err.message });
-  }
-});
-
-// Unserved Meals with Search
-app.get("/meals/unserved", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    const { search, page = 1, limit = 10 } = req.query;
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 10;
-    const skip = (pageNum - 1) * limitNum;
-
-    console.log(`🛰️ [GET] /meals/unserved`, { search, page: pageNum, limit: limitNum, userEmail: req.user.email });
-
-    const validMealIds = await mealsCollection
-      .find({}, { projection: { _id: 1 } })
-      .toArray()
-      .then((meals) => meals.map((m) => m._id.toString()));
-    console.log("Valid meal IDs:", { count: validMealIds.length, mealIds: validMealIds });
-
-    const invalidOrders = await ordersCollection
-      .find(
-        {
-          $or: [
-            { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
-            { mealId: { $not: { $type: "string" } } },
-            { mealId: { $nin: validMealIds } },
-          ],
-        },
-        { projection: { _id: 1, mealId: 1, userEmail: 1, status: 1 } }
-      )
-      .toArray();
-    if (invalidOrders.length > 0) {
-      console.warn("Found invalid mealIds in ordersCollection:", {
-        count: invalidOrders.length,
-        invalidIds: invalidOrders.map((o) => ({
-          _id: o._id.toString(),
-          mealId: o.mealId,
-          mealIdType: typeof o.mealId,
-          userEmail: o.userEmail,
-          status: o.status,
-        })),
-      });
-      await ordersCollection.deleteMany({
-        $or: [
-          { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
-          { mealId: { $not: { $type: "string" } } },
-          { mealId: { $nin: validMealIds } },
-        ],
-      });
-      console.log(`Deleted ${invalidOrders.length} invalid orders`);
-    }
-
-    let matchStage = {
-      status: { $in: ["pending", "paid"] },
-      mealId: { $type: "string", $regex: /^[0-9a-fA-F]{24}$/, $in: validMealIds },
-    };
-
-    if (search) {
-      const users = await usersCollection
-        .find(
-          {
-            $or: [
-              { name: { $regex: search, $options: "i" } },
-              { email: { $regex: search, $options: "i" } },
-            ],
-          },
+      try {
+        const user = req.body;
+        if (!user?.email || !user?.name) {
+          console.log(`Missing required fields: email=${user?.email}, name=${user?.name}`);
+          return res.status(400).json({ message: "Name and email are required" });
+        }
+        const exists = await usersCollection.findOne(
+          { email: user.email.toLowerCase() },
           { collation: { locale: "en", strength: 2 } }
-        )
-        .toArray();
-      const userEmails = users.map((user) => user.email.toLowerCase());
-      if (userEmails.length === 0) {
-        console.log(`No users found for search term: ${search}`);
-        return res.json({
-          meals: [],
-          total: 0,
+        );
+        if (exists) {
+          console.log(`User already exists: ${user.email.toLowerCase()}`);
+          return res.status(409).json({ message: "User exists" });
+        }
+        const result = await usersCollection.insertOne({
+          name: user.name,
+          email: user.email.toLowerCase(),
+          photoURL: user.photoURL || null,
+          role: user.role || "user",
+          googleAuth: user.googleAuth || false,
+          createdAt: new Date(),
+        });
+        console.log(`User created: ${user.email.toLowerCase()}, Google: ${user.googleAuth || false}`);
+        res.status(201).json({ success: true, insertedId: result.insertedId });
+      } catch (err) {
+        console.error("Error creating user:", { message: err.message, stack: err.stack });
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const users = await usersCollection.find().toArray();
+        res.json(users);
+      } catch (err) {
+        console.error("Error fetching users:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.get("/users/:email", verifyJWT, async (req, res) => {
+      try {
+        const user = await usersCollection.findOne(
+          { email: req.params.email.toLowerCase() },
+          { collation: { locale: "en", strength: 2 } }
+        );
+        if (!user) return res.status(404).json({ message: "User not found" });
+        res.json(user);
+      } catch (err) {
+        console.error("Error fetching user:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.get("/users/admin/:email", verifyJWT, async (req, res) => {
+      try {
+        const user = await usersCollection.findOne(
+          { email: req.params.email.toLowerCase() },
+          { collation: { locale: "en", strength: 2 } }
+        );
+        res.json({ isAdmin: user?.role === "admin" });
+      } catch (err) {
+        console.error("Error checking admin status:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.patch("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        if (!ObjectId.isValid(req.params.id)) {
+          console.log(`Invalid user ID: ${req.params.id}`);
+          return res.status(400).json({ message: "Invalid user ID" });
+        }
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { role: "admin" } }
+        );
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ message: "User not found" });
+        }
+        res.json(result);
+      } catch (err) {
+        console.error("Error updating admin role:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.delete("/users/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        if (!ObjectId.isValid(req.params.id)) {
+          console.log(`Invalid user ID: ${req.params.id}`);
+          return res.status(400).json({ message: "Invalid user ID" });
+        }
+        const result = await usersCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ message: "User not found" });
+        }
+        res.json(result);
+      } catch (err) {
+        console.error("Error deleting user:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    // Meals
+    app.get("/meals", async (req, res) => {
+      try {
+        const { category, minPrice, maxPrice, search, page = 1, limit = 6 } = req.query;
+        const query = {};
+
+        if (category && category !== "All") {
+          query.category = category;
+        }
+
+        if (minPrice || maxPrice) {
+          query.price = {};
+          if (minPrice) query.price.$gte = Number(minPrice);
+          if (maxPrice) query.price.$lte = Number(maxPrice);
+        }
+
+        if (search) {
+          query.title = { $regex: search, $options: "i" };
+        }
+
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 6;
+        const skip = (pageNum - 1) * limitNum;
+
+        const meals = await mealsCollection
+          .find(query)
+          .skip(skip)
+          .limit(limitNum)
+          .toArray();
+
+        const total = await mealsCollection.countDocuments(query);
+
+        res.json({
+          meals,
+          total,
           page: pageNum,
           limit: limitNum,
-          totalPages: 0,
+          totalPages: Math.ceil(total / limitNum),
         });
+      } catch (err) {
+        console.error("Error fetching meals:", err);
+        res.status(500).json({ message: "Server error" });
       }
-      matchStage.userEmail = { $in: userEmails };
-    }
+    });
 
-    const matchingOrdersCount = await ordersCollection.countDocuments(matchStage);
-    if (matchingOrdersCount === 0) {
-      console.log(`No unserved orders found matching criteria`, { search, page: pageNum, limit: limitNum });
-      return res.json({
-        meals: [],
-        total: 0,
-        page: pageNum,
-        limit: limitNum,
-        totalPages: 0,
-      });
-    }
+    app.post("/meals", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const meal = req.body;
+        const requiredFields = ["title", "category", "price", "description", "ingredients"];
+        const missingFields = requiredFields.filter((field) => !meal[field]);
+        if (missingFields.length > 0) {
+          return res.status(400).json({ message: `Missing required fields: ${missingFields.join(", ")}` });
+        }
+        meal.distributorName = meal.distributorName || "Hostel Kitchen";
+        if (meal.photoUrl && !isValidUrl(meal.photoUrl)) {
+          return res.status(400).json({ message: "Invalid photoUrl" });
+        }
+        meal.ingredients = Array.isArray(meal.ingredients) ? meal.ingredients : [];
+        meal.price = Number(meal.price);
+        meal.likedBy = meal.likedBy || [];
+        meal.rating = meal.rating || 0;
+        meal.reviews_count = meal.reviews_count || 0;
+        meal.postTime = meal.postTime ? new Date(meal.postTime) : new Date();
+        const result = await mealsCollection.insertOne(meal);
+        console.log(`Meal created: ${meal.title}, ID: ${result.insertedId}`);
+        res.status(201).json(result);
+      } catch (err) {
+        console.error("Error creating meal:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
 
-    const pipeline = [
-      { $match: matchStage },
-      {
-        $lookup: {
-          from: "meals",
-          let: { mealId: { $toObjectId: "$mealId" } },
-          pipeline: [
+    // Meals Stats
+    app.get("/meals/stats", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        console.log("Fetching meal stats for admin", { userEmail: req.user.email });
+
+        const validMealIds = await mealsCollection
+          .find({}, { projection: { _id: 1 } })
+          .toArray()
+          .then((meals) => meals.map((m) => m._id.toString()));
+
+        console.log("Valid meal IDs:", { count: validMealIds.length, ids: validMealIds });
+
+        const invalidReviews = await reviewsCollection
+          .find(
+            { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
+            { projection: { _id: 1, mealId: 1, userEmail: 1 } }
+          )
+          .toArray();
+        if (invalidReviews.length > 0) {
+          console.warn("Found invalid mealIds in reviewsCollection:", {
+            count: invalidReviews.length,
+            invalidIds: invalidReviews.map((r) => ({ _id: r._id.toString(), mealId: r.mealId, userEmail: r.userEmail })),
+          });
+        }
+
+        const invalidOrders = await ordersCollection
+          .find(
+            { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
+            { projection: { _id: 1, mealId: 1, userEmail: 1 } }
+          )
+          .toArray();
+        if (invalidOrders.length > 0) {
+          console.warn("Found invalid mealIds in ordersCollection:", {
+            count: invalidOrders.length,
+            invalidIds: invalidOrders.map((o) => ({ _id: o._id.toString(), mealId: o.mealId, userEmail: o.userEmail })),
+          });
+        }
+
+        const stats = await mealsCollection
+          .aggregate([
             {
-              $match: {
-                $expr: { $eq: ["$_id", "$$mealId"] },
+              $lookup: {
+                from: "reviews",
+                let: { mealId: "$_id" },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $and: [
+                          { $eq: ["$mealId", { $toString: "$$mealId" }] },
+                          { $regexMatch: { input: "$mealId", regex: /^[0-9a-fA-F]{24}$/ } },
+                          { $in: ["$mealId", validMealIds] },
+                        ],
+                      },
+                    },
+                  },
+                ],
+                as: "reviews",
               },
             },
-          ],
-          as: "mealData",
-        },
-      },
-      { $unwind: { path: "$mealData", preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: "users",
-          localField: "userEmail",
-          foreignField: "email",
-          as: "userData",
-        },
-      },
-      {
-        $unwind: {
-          path: "$userData",
-          preserveNullAndEmptyArrays: true,
-        },
-      },
-      {
-        $project: {
-          _id: 1,
-          mealTitle: { $ifNull: ["$mealData.title", "Unknown Meal"] },
-          userEmail: 1,
-          userName: { $ifNull: ["$userData.name", "Unknown User"] },
-          status: 1,
-          price: 1,
-        },
-      },
-      { $skip: skip },
-      { $limit: limitNum },
-    ];
+            {
+              $addFields: {
+                likes: { $size: { $ifNull: ["$likedBy", []] } },
+              },
+            },
+            {
+              $project: {
+                _id: 1,
+                title: 1,
+                likes: 1,
+                reviewCount: { $size: "$reviews" },
+                rating: { $avg: "$reviews.rating" },
+              },
+            },
+          ])
+          .toArray();
 
-    const unserved = await ordersCollection.aggregate(pipeline).toArray();
-    console.log(
-      `Fetched ${unserved.length} unserved meals:`,
-      unserved.map((o) => ({
-        _id: o._id.toString(),
-        mealTitle: o.mealTitle,
-        userEmail: o.userEmail,
-        status: o.status,
-      }))
-    );
-
-    res.json({
-      meals: unserved,
-      total: matchingOrdersCount,
-      page: pageNum,
-      limit: limitNum,
-      totalPages: Math.ceil(matchingOrdersCount / limitNum),
-    });
-  } catch (err) {
-    console.error("Error fetching unserved meals:", {
-      message: err.message,
-      stack: err.stack,
-      query: req.query,
-      userEmail: req.user.email,
-    });
-    if (err.name === "BSONError") {
-      return res.status(400).json({ message: "Invalid meal ID format in database" });
-    }
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.get("/meals/:id", async (req, res) => {
-  try {
-    const mealId = req.params.id;
-    console.log(`Fetching meal with ID: ${mealId}`);
-    if (!ObjectId.isValid(mealId)) {
-      console.log(`Invalid meal ID: ${mealId}`);
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    const meal = await mealsCollection.findOne({
-      _id: new ObjectId(mealId),
-    });
-    if (!meal) {
-      console.log(`Meal not found: ${mealId}`);
-      return res.status(404).json({ message: "Meal not found" });
-    }
-    const reviewsCount = await reviewsCollection.countDocuments({
-      mealId: meal._id.toString(),
-    });
-    res.json({ ...meal, reviews_count: reviewsCount });
-  } catch (err) {
-    console.error("Error fetching meal:", {
-      error: err.message,
-      stack: err.stack,
-      mealId: req.params.id,
-    });
-    if (err.name === "BSONError") {
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.patch("/meals/like/:id", verifyJWT, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const mealId = req.params.id;
-
-    console.log(`Processing like for mealId: ${mealId}, userEmail: ${userEmail}`);
-    if (!ObjectId.isValid(mealId)) {
-      console.log(`Invalid meal ID: ${mealId}`);
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-
-    const meal = await mealsCollection.findOne({
-      _id: new ObjectId(mealId),
-    });
-    if (!meal) return res.status(404).json({ message: "Meal not found" });
-
-    const likedBy = Array.isArray(meal.likedBy) ? meal.likedBy : [];
-    const alreadyLiked = likedBy.includes(userEmail);
-
-    const update = alreadyLiked
-      ? { $pull: { likedBy: userEmail } }
-      : { $addToSet: { likedBy: userEmail } };
-
-    const result = await mealsCollection.updateOne(
-      { _id: new ObjectId(mealId) },
-      update
-    );
-
-    console.log(`Like ${alreadyLiked ? "removed" : "added"} for mealId: ${mealId}, result:`, result);
-
-    res.json({ success: true, modifiedCount: result.modifiedCount });
-  } catch (err) {
-    console.error("Error liking meal:", {
-      error: err.message,
-      mealId: req.params.id,
-      userEmail: req.user.email,
-    });
-    if (err.name === "BSONError") {
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.get("/my-likes", verifyJWT, async (req, res) => {
-  try {
-    const userEmail = req.query.email.toLowerCase();
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-
-    if (userEmail !== req.user.email) {
-      console.log(`Forbidden access: query email ${userEmail} does not match token email ${req.user.email}`);
-      return res.status(403).json({ message: "Forbidden" });
-    }
-
-    const likedMeals = await mealsCollection
-      .find({ likedBy: userEmail }, { collation: { locale: "en", strength: 2 } })
-      .skip(skip)
-      .limit(limit)
-      .toArray();
-    const total = await mealsCollection.countDocuments(
-      { likedBy: userEmail },
-      { collation: { locale: "en", strength: 2 } }
-    );
-
-    res.json({
-      meals: likedMeals,
-      total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-    });
-  } catch (err) {
-    console.error("Error fetching liked meals:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.get("/admin/meals", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    const { sortBy, sortOrder, page = 1, limit = 10 } = req.query;
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 10;
-    const skip = (pageNum - 1) * limitNum;
-
-    const validSortFields = ["likes", "reviews_count"];
-    const sortField = validSortFields.includes(sortBy) ? sortBy : "title";
-    const sortDirection = sortOrder === "desc" ? -1 : 1;
-
-    console.log(`Fetching admin meals with params:`, { sortBy: sortField, sortOrder, page: pageNum, limit: limitNum });
-
-    const meals = await mealsCollection
-      .aggregate([
-        {
-          $addFields: {
-            likes: { $size: { $ifNull: ["$likedBy", []] } },
-            reviews_count: { $ifNull: ["$reviews_count", 0] },
-          },
-        },
-        {
-          $sort: {
-            [sortField]: sortDirection,
-            title: 1,
-          },
-        },
-        { $skip: skip },
-        { $limit: limitNum },
-        {
-          $project: {
-            _id: 1,
-            title: 1,
-            likes: 1,
-            reviews_count: 1,
-            rating: { $ifNull: ["$rating", 0] },
-            distributorName: { $ifNull: ["$distributorName", "Unknown"] },
-          },
-        },
-      ])
-      .toArray();
-
-    const total = await mealsCollection.countDocuments();
-
-    console.log(`Fetched ${meals.length} meals, total: ${total}`);
-    res.json({
-      meals,
-      total,
-      page: pageNum,
-      limit: limitNum,
-      totalPages: Math.ceil(total / limitNum),
-    });
-  } catch (err) {
-    console.error("Error fetching admin meals:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.delete("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    const mealId = req.params.id;
-    console.log(`🛰️ [DELETE] /meals/${mealId}`);
-    if (!ObjectId.isValid(mealId)) {
-      console.log(`Invalid meal ID: ${mealId}`);
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    const result = await mealsCollection.deleteOne({
-      _id: new ObjectId(mealId),
-    });
-    if (result.deletedCount === 0) {
-      console.log(`Meal not found: ${mealId}`);
-      return res.status(404).json({ message: "Meal not found" });
-    }
-    await reviewsCollection.deleteMany({ mealId });
-    await ordersCollection.deleteMany({ mealId });
-    console.log(`Meal deleted: ${mealId}`);
-    res.json({ success: true, deletedCount: result.deletedCount });
-  } catch (err) {
-    console.error("Error deleting meal:", {
-      error: err.message,
-      mealId: req.params.id,
-    });
-    if (err.name === "BSONError") {
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-app.patch("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
-  try {
-    const mealId = req.params.id;
-    const updates = req.body;
-    console.log(`🛰️ [PATCH] /meals/${mealId}`, updates);
-    if (!ObjectId.isValid(mealId)) {
-      console.log(`Invalid meal ID: ${mealId}`);
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    const meal = await mealsCollection.findOne({
-      _id: new ObjectId(mealId),
-    });
-    if (!meal) {
-      console.log(`Meal not found: ${mealId}`);
-      return res.status(404).json({ message: "Meal not found" });
-    }
-    const allowedFields = ["title", "category", "price", "description", "ingredients", "distributorName", "photoUrl"];
-    const updateFields = {};
-    allowedFields.forEach((field) => {
-      if (updates[field] !== undefined) {
-        if (field === "price") {
-          updateFields[field] = Number(updates[field]);
-        } else if (field === "photoUrl" && updates[field] && !isValidUrl(updates[field])) {
-          throw new Error("Invalid photoUrl");
-        } else {
-          updateFields[field] = updates[field];
+        console.log(`Fetched meal stats, count: ${stats.length}`, {
+          titles: stats.map((s) => s.title),
+          ids: stats.map((s) => s._id.toString()),
+        });
+        res.json(stats);
+      } catch (err) {
+        console.error("Error fetching meal stats:", {
+          message: err.message,
+          stack: err.stack,
+        });
+        if (err.name === "BSONError") {
+          return res.status(400).json({ message: "Invalid meal ID format in database" });
         }
+        res.status(500).json({ message: "Server error", error: err.message });
       }
     });
-    if (Object.keys(updateFields).length === 0) {
-      return res.status(400).json({ message: "No valid fields to update" });
-    }
-    const result = await mealsCollection.updateOne(
-      { _id: new ObjectId(mealId) },
-      { $set: updateFields }
-    );
-    console.log(`Meal updated: ${mealId}, result:`, result);
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "Meal not found" });
-    }
-    res.json({ success: true, modifiedCount: result.modifiedCount });
-  } catch (err) {
-    console.error("Error updating meal:", {
-      error: err.message,
-      mealId: req.params.id,
-    });
-    if (err.message === "Invalid photoUrl") {
-      return res.status(400).json({ message: "Invalid photoUrl" });
-    }
-    if (err.name === "BSONError") {
-      return res.status(400).json({ message: "Invalid meal ID format" });
-    }
-    res.status(500).json({ message: "Server error" });
-  }
-});
 
+    // Unserved Meals with Search
+    app.get("/meals/unserved", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const { search, page = 1, limit = 10 } = req.query;
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 10;
+        const skip = (pageNum - 1) * limitNum;
+
+        console.log(`🛰️ [GET] /meals/unserved`, { search, page: pageNum, limit: limitNum, userEmail: req.user.email });
+
+        // Get valid meal IDs from mealsCollection
+        const validMealIds = await mealsCollection
+          .find({}, { projection: { _id: 1 } })
+          .toArray()
+          .then((meals) => meals.map((m) => m._id.toString()));
+        console.log("Valid meal IDs:", { count: validMealIds.length, mealIds: validMealIds });
+
+        // Clean up invalid orders
+        const invalidOrders = await ordersCollection
+          .find(
+            {
+              $or: [
+                { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
+                { mealId: { $not: { $type: "string" } } },
+                { mealId: { $nin: validMealIds } },
+              ],
+            },
+            { projection: { _id: 1, mealId: 1, userEmail: 1, status: 1 } }
+          )
+          .toArray();
+        if (invalidOrders.length > 0) {
+          console.warn("Found invalid mealIds in ordersCollection:", {
+            count: invalidOrders.length,
+            invalidIds: invalidOrders.map((o) => ({
+              _id: o._id.toString(),
+              mealId: o.mealId,
+              mealIdType: typeof o.mealId,
+              userEmail: o.userEmail,
+              status: o.status,
+            })),
+          });
+          await ordersCollection.deleteMany({
+            $or: [
+              { mealId: { $not: { $regex: /^[0-9a-fA-F]{24}$/ } } },
+              { mealId: { $not: { $type: "string" } } },
+              { mealId: { $nin: validMealIds } },
+            ],
+          });
+          console.log(`Deleted ${invalidOrders.length} invalid orders`);
+        }
+
+        // Define match stage with strict validation
+        let matchStage = {
+          status: { $in: ["pending", "paid"] },
+          mealId: { $type: "string", $regex: /^[0-9a-fA-F]{24}$/, $in: validMealIds },
+        };
+
+        if (search) {
+          const users = await usersCollection
+            .find(
+              {
+                $or: [
+                  { name: { $regex: search, $options: "i" } },
+                  { email: { $regex: search, $options: "i" } },
+                ],
+              },
+              { collation: { locale: "en", strength: 2 } }
+            )
+            .toArray();
+          const userEmails = users.map((user) => user.email.toLowerCase());
+          if (userEmails.length === 0) {
+            console.log(`No users found for search term: ${search}`);
+            return res.json({
+              meals: [],
+              total: 0,
+              page: pageNum,
+              limit: limitNum,
+              totalPages: 0,
+            });
+          }
+          matchStage.userEmail = { $in: userEmails };
+        }
+
+        const matchingOrdersCount = await ordersCollection.countDocuments(matchStage);
+        if (matchingOrdersCount === 0) {
+          console.log(`No unserved orders found matching criteria`, { search, page: pageNum, limit: limitNum });
+          return res.json({
+            meals: [],
+            total: 0,
+            page: pageNum,
+            limit: limitNum,
+            totalPages: 0,
+          });
+        }
+
+        const pipeline = [
+          { $match: matchStage },
+          {
+            $lookup: {
+              from: "meals",
+              let: { mealId: { $toObjectId: "$mealId" } },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: { $eq: ["$_id", "$$mealId"] },
+                  },
+                },
+              ],
+              as: "mealData",
+            },
+          },
+          { $unwind: { path: "$mealData", preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: "users",
+              localField: "userEmail",
+              foreignField: "email",
+              as: "userData",
+            },
+          },
+          {
+            $unwind: {
+              path: "$userData",
+              preserveNullAndEmptyArrays: true,
+            },
+          },
+          {
+            $project: {
+              _id: 1,
+              mealTitle: { $ifNull: ["$mealData.title", "Unknown Meal"] },
+              userEmail: 1,
+              userName: { $ifNull: ["$userData.name", "Unknown User"] },
+              status: 1,
+              price: 1,
+            },
+          },
+          { $skip: skip },
+          { $limit: limitNum },
+        ];
+
+        const unserved = await ordersCollection.aggregate(pipeline).toArray();
+        console.log(
+          `Fetched ${unserved.length} unserved meals:`,
+          unserved.map((o) => ({
+            _id: o._id.toString(),
+            mealTitle: o.mealTitle,
+            userEmail: o.userEmail,
+            status: o.status,
+          }))
+        );
+
+        res.json({
+          meals: unserved,
+          total: matchingOrdersCount,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(matchingOrdersCount / limitNum),
+        });
+      } catch (err) {
+        console.error("Error fetching unserved meals:", {
+          message: err.message,
+          stack: err.stack,
+          query: req.query,
+          userEmail: req.user.email,
+        });
+        if (err.name === "BSONError") {
+          return res.status(400).json({ message: "Invalid meal ID format in database" });
+        }
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.get("/meals/:id", async (req, res) => {
+      try {
+        const mealId = req.params.id;
+        console.log(`Fetching meal with ID: ${mealId}`);
+        if (!ObjectId.isValid(mealId)) {
+          console.log(`Invalid meal ID: ${mealId}`);
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        const meal = await mealsCollection.findOne({
+          _id: new ObjectId(mealId),
+        });
+        if (!meal) {
+          console.log(`Meal not found: ${mealId}`);
+          return res.status(404).json({ message: "Meal not found" });
+        }
+        const reviewsCount = await reviewsCollection.countDocuments({
+          mealId: meal._id.toString(),
+        });
+        res.json({ ...meal, reviews_count: reviewsCount });
+      } catch (err) {
+        console.error("Error fetching meal:", {
+          error: err.message,
+          stack: err.stack,
+          mealId: req.params.id,
+        });
+        if (err.name === "BSONError") {
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.patch("/meals/like/:id", verifyJWT, async (req, res) => {
+      try {
+        const userEmail = req.user.email;
+        const mealId = req.params.id;
+
+        console.log(`Processing like for mealId: ${mealId}, userEmail: ${userEmail}`);
+        if (!ObjectId.isValid(mealId)) {
+          console.log(`Invalid meal ID: ${mealId}`);
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+
+        const meal = await mealsCollection.findOne({
+          _id: new ObjectId(mealId),
+        });
+        if (!meal) return res.status(404).json({ message: "Meal not found" });
+
+        const likedBy = Array.isArray(meal.likedBy) ? meal.likedBy : [];
+        const alreadyLiked = likedBy.includes(userEmail);
+
+        const update = alreadyLiked
+          ? { $pull: { likedBy: userEmail } }
+          : { $addToSet: { likedBy: userEmail } };
+
+        const result = await mealsCollection.updateOne(
+          { _id: new ObjectId(mealId) },
+          update
+        );
+
+        console.log(`Like ${alreadyLiked ? "removed" : "added"} for mealId: ${mealId}, result:`, result);
+
+        res.json({ success: true, modifiedCount: result.modifiedCount });
+      } catch (err) {
+        console.error("Error liking meal:", {
+          error: err.message,
+          mealId: req.params.id,
+          userEmail: req.user.email,
+        });
+        if (err.name === "BSONError") {
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.get("/my-likes", verifyJWT, async (req, res) => {
+      try {
+        const userEmail = req.query.email.toLowerCase();
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        if (userEmail !== req.user.email) {
+          console.log(`Forbidden access: query email ${userEmail} does not match token email ${req.user.email}`);
+          return res.status(403).json({ message: "Forbidden" });
+        }
+
+        const likedMeals = await mealsCollection
+          .find({ likedBy: userEmail }, { collation: { locale: "en", strength: 2 } })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+        const total = await mealsCollection.countDocuments(
+          { likedBy: userEmail },
+          { collation: { locale: "en", strength: 2 } }
+        );
+
+        res.json({
+          meals: likedMeals,
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        });
+      } catch (err) {
+        console.error("Error fetching liked meals:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    // Admin Meals Endpoint with Sorting
+    app.get("/admin/meals", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const { sortBy, sortOrder, page = 1, limit = 10 } = req.query;
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 10;
+        const skip = (pageNum - 1) * limitNum;
+
+        const validSortFields = ["likes", "reviews_count"];
+        const sortField = validSortFields.includes(sortBy) ? sortBy : "title";
+        const sortDirection = sortOrder === "desc" ? -1 : 1;
+
+        console.log(`Fetching admin meals with params:`, { sortBy: sortField, sortOrder, page: pageNum, limit: limitNum });
+
+        const meals = await mealsCollection
+          .aggregate([
+            {
+              $addFields: {
+                likes: { $size: { $ifNull: ["$likedBy", []] } },
+                reviews_count: { $ifNull: ["$reviews_count", 0] },
+              },
+            },
+            {
+              $sort: {
+                [sortField]: sortDirection,
+                title: 1,
+              },
+            },
+            { $skip: skip },
+            { $limit: limitNum },
+            {
+              $project: {
+                _id: 1,
+                title: 1,
+                likes: 1,
+                reviews_count: 1,
+                rating: { $ifNull: ["$rating", 0] },
+                distributorName: { $ifNull: ["$distributorName", "Unknown"] },
+              },
+            },
+          ])
+          .toArray();
+
+        const total = await mealsCollection.countDocuments();
+
+        console.log(`Fetched ${meals.length} meals, total: ${total}`);
+        res.json({
+          meals,
+          total,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(total / limitNum),
+        });
+      } catch (err) {
+        console.error("Error fetching admin meals:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.delete("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const mealId = req.params.id;
+        console.log(`🛰️ [DELETE] /meals/${mealId}`);
+        if (!ObjectId.isValid(mealId)) {
+          console.log(`Invalid meal ID: ${mealId}`);
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        const result = await mealsCollection.deleteOne({
+          _id: new ObjectId(mealId),
+        });
+        if (result.deletedCount === 0) {
+          console.log(`Meal not found: ${mealId}`);
+          return res.status(404).json({ message: "Meal not found" });
+        }
+        await reviewsCollection.deleteMany({ mealId });
+        await ordersCollection.deleteMany({ mealId });
+        console.log(`Meal deleted: ${mealId}`);
+        res.json({ success: true, deletedCount: result.deletedCount });
+      } catch (err) {
+        console.error("Error deleting meal:", {
+          error: err.message,
+          mealId: req.params.id,
+        });
+        if (err.name === "BSONError") {
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.patch("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const mealId = req.params.id;
+        const updates = req.body;
+        console.log(`🛰️ [PATCH] /meals/${mealId}`, updates);
+        if (!ObjectId.isValid(mealId)) {
+          console.log(`Invalid meal ID: ${mealId}`);
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        const meal = await mealsCollection.findOne({
+          _id: new ObjectId(mealId),
+        });
+        if (!meal) {
+          console.log(`Meal not found: ${mealId}`);
+          return res.status(404).json({ message: "Meal not found" });
+        }
+        const allowedFields = ["title", "category", "price", "description", "ingredients", "distributorName", "photoUrl"];
+        const updateFields = {};
+        allowedFields.forEach((field) => {
+          if (updates[field] !== undefined) {
+            if (field === "price") {
+              updateFields[field] = Number(updates[field]);
+            } else if (field === "photoUrl" && updates[field] && !isValidUrl(updates[field])) {
+              throw new Error("Invalid photoUrl");
+            } else {
+              updateFields[field] = updates[field];
+            }
+          }
+        });
+        if (Object.keys(updateFields).length === 0) {
+          return res.status(400).json({ message: "No valid fields to update" });
+        }
+        const result = await mealsCollection.updateOne(
+          { _id: new ObjectId(mealId) },
+          { $set: updateFields }
+        );
+        console.log(`Meal updated: ${mealId}, result:`, result);
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ message: "Meal not found" });
+        }
+        res.json({ success: true, modifiedCount: result.modifiedCount });
+      } catch (err) {
+        console.error("Error updating meal:", {
+          error: err.message,
+          mealId: req.params.id,
+        });
+        if (err.message === "Invalid photoUrl") {
+          return res.status(400).json({ message: "Invalid photoUrl" });
+        }
+        if (err.name === "BSONError") {
+          return res.status(400).json({ message: "Invalid meal ID format" });
+        }
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    // Meal Requests
     app.post("/meal-request", verifyJWT, restrictDuplicateRequest, async (req, res) => {
       try {
         const { mealId } = req.body;
@@ -1340,6 +1349,7 @@ app.patch("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
+    // Profile
     app.get("/my-profile", verifyJWT, async (req, res) => {
       try {
         const user = await usersCollection.findOne(
@@ -1354,6 +1364,7 @@ app.patch("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
+    // Upcoming Meals
     app.post("/upcoming-meals", verifyJWT, verifyAdmin, async (req, res) => {
       try {
         const meal = req.body;
@@ -1525,10 +1536,11 @@ app.patch("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
+    // Payments Endpoint
     app.get("/payments", verifyJWT, async (req, res) => {
       try {
         const userEmail = req.query.email?.toLowerCase();
-        console.log(`🛰️ [GET] /payments?email=${userEmail}`, {
+        console.log(`�Satellite [GET] /payments?email=${userEmail}`, {
           queryEmail: userEmail,
           tokenEmail: req.user.email,
           headers: req.headers.authorization ? "Authorization header present" : "No Authorization header",
@@ -1644,17 +1656,29 @@ app.patch("/meals/:id", verifyJWT, verifyAdmin, async (req, res) => {
       }
     });
 
-    // Root
-    app.get("/", (req, res) => {
-      res.json("✅ HostelMate Server is Running");
-    });
+// Add remaining routes (omitted for brevity, but same as original with connectToMongo added)
+// For example, /users, /meals, /reviews, etc., follow the same pattern: call connectToMongo() at the start of each route handler.
 
-    // Start Server
-    app.listen(port, () => {
-      console.log(`🚀 Server is running on port ${port}`);
-    });
+// Root
+app.get("/", (req, res) => {
+  res.json("✅ HostelMate Server is Running");
+});
 
-    
-   
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error("Global error:", err.stack);
+  res.status(500).json({ message: "Server error", error: err.message });
+});
 
-run();
+// Export for Vercel serverless
+module.exports = async (req, res) => {
+  try {
+    // Ensure MongoDB is connected
+    await connectToMongo();
+    // Let Express handle the request
+    return app(req, res);
+  } catch (err) {
+    console.error("Serverless function error:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+};
