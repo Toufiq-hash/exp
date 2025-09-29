@@ -19,7 +19,7 @@ app.use((req, res, next) => {
 });
 
 // MongoDB setup
-const uri = "mongodb+srv://as10:XAltanrBAK1rjCve@cluster0.s7iqsx5.mongodb.net/hostel?retryWrites=true&w=majority&appName=Cluster0";
+const uri = process.env.MONGODB_URI;
 if (!uri) throw new Error("MONGODB_URI is not defined");
 
 const client = new MongoClient(uri, {
