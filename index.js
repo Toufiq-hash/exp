@@ -1,11 +1,9 @@
-// server.js (Vercel Serverless)
-
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId } = require("mongodb");
 const dotenv = require("dotenv").config();
-const stripe = require("stripe")(process.env.STRIPE_SECRET);
+const stripe = require("stripe")(process.env.STRIPE_SECRET || "");
 const serverless = require("serverless-http");
 
 const app = express();
@@ -18,11 +16,17 @@ app.use((req, res, next) => {
   next();
 });
 
-// MongoDB setup
-const uri = process.env.MONGODB_URI;
-if (!uri) throw new Error("MONGODB_URI is not defined");
+// Environment variable validation
+const requiredEnvVars = ["MONGODB_URI", "STRIPE_SECRET", "JWT_SECRET"];
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`❌ Missing environment variable: ${envVar}`);
+    throw new Error(`Missing environment variable: ${envVar}`);
+  }
+}
 
-const client = new MongoClient(uri, {
+// MongoDB setup
+const client = new MongoClient(process.env.MONGODB_URI, {
   connectTimeoutMS: 10000,
   serverSelectionTimeoutMS: 10000,
 });
@@ -41,9 +45,13 @@ async function connectToMongo() {
       ordersCollection = db.collection("orders");
       paymentsCollection = db.collection("payments");
       console.log("✅ Connected to MongoDB");
+      // Create indexes for performance
+      await usersCollection.createIndex({ email: 1 }, { unique: true, collation: { locale: "en", strength: 2 } });
+      await ordersCollection.createIndex({ mealId: 1, userEmail: 1 });
+      await reviewsCollection.createIndex({ mealId: 1, userEmail: 1 });
     } catch (err) {
-      console.error("❌ MongoDB connection error:", err);
-      throw err;
+      console.error("❌ MongoDB connection error:", err.message);
+      throw new Error("Failed to connect to MongoDB");
     }
   }
   return client;
@@ -51,73 +59,126 @@ async function connectToMongo() {
 
 // JWT Middleware
 const verifyJWT = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ message: "Unauthorized access: No token provided" });
-  const token = authHeader.split(" ")[1];
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ message: "Forbidden access: Invalid token" });
-    req.user = { email: decoded.email.toLowerCase() };
-    next();
-  });
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      console.log("No Authorization header provided");
+      return res.status(401).json({ message: "Unauthorized access: No token provided" });
+    }
+    const token = authHeader.split(" ")[1];
+    if (!token) {
+      console.log("Invalid token format");
+      return res.status(401).json({ message: "Unauthorized access: Invalid token format" });
+    }
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) {
+        console.error("JWT verification failed:", err.message);
+        return res.status(403).json({ message: "Forbidden access: Invalid or expired token" });
+      }
+      req.user = { email: decoded.email.toLowerCase() };
+      next();
+    });
+  } catch (err) {
+    console.error("Error in verifyJWT:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 // Admin Middleware
 const verifyAdmin = async (req, res, next) => {
   try {
     await connectToMongo();
-    const user = await usersCollection.findOne({ email: req.user.email });
-    if (!user || user.role !== "admin") return res.status(403).json({ message: "Admin access only" });
+    const user = await usersCollection.findOne(
+      { email: req.user.email },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (!user || user.role !== "admin") {
+      console.log(`Admin access denied for ${req.user.email}`);
+      return res.status(403).json({ message: "Admin access only" });
+    }
     next();
-  } catch (error) {
-    console.error("verifyAdmin error:", error);
+  } catch (err) {
+    console.error("Error in verifyAdmin:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// Duplicate review
+// Duplicate Review Middleware
 const restrictDuplicateReview = async (req, res, next) => {
   try {
     await connectToMongo();
     const { mealId, userEmail } = req.body;
-    if (!ObjectId.isValid(mealId)) return res.status(400).json({ message: "Invalid meal ID format" });
-    const exists = await reviewsCollection.findOne({ mealId, userEmail: userEmail.toLowerCase() });
-    if (exists) return res.status(400).json({ message: "Duplicate review detected" });
+    if (!ObjectId.isValid(mealId)) {
+      console.log(`Invalid meal ID: ${mealId}`);
+      return res.status(400).json({ message: "Invalid meal ID format" });
+    }
+    const exists = await reviewsCollection.findOne(
+      { mealId, userEmail: userEmail.toLowerCase() },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (exists) {
+      console.log("Duplicate review detected:", { mealId, userEmail });
+      return res.status(400).json({ message: "You have already submitted a review for this meal" });
+    }
     next();
   } catch (err) {
-    console.error(err);
+    console.error("Error in restrictDuplicateReview:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// Duplicate request
+// Duplicate Request Middleware
 const restrictDuplicateRequest = async (req, res, next) => {
   try {
     await connectToMongo();
     const { mealId } = req.body;
     const userEmail = req.user.email;
-    if (!ObjectId.isValid(mealId)) return res.status(400).json({ message: "Invalid meal ID format" });
-    const exists = await ordersCollection.findOne({ mealId, userEmail, status: { $in: ["pending", "paid"] } });
-    if (exists) return res.status(400).json({ message: "Duplicate request detected" });
+    if (!ObjectId.isValid(mealId)) {
+      console.log(`Invalid meal ID: ${mealId}`);
+      return res.status(400).json({ message: "Invalid meal ID format" });
+    }
+    const exists = await ordersCollection.findOne(
+      { mealId, userEmail, status: { $in: ["pending", "paid"] } },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (exists) {
+      console.log("Duplicate request detected:", { mealId, userEmail });
+      return res.status(400).json({ message: "You have already requested this meal" });
+    }
     next();
   } catch (err) {
-    console.error(err);
+    console.error("Error in restrictDuplicateRequest:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
 
 // Utility
 const isValidUrl = (url) => {
-  try { new URL(url); return true; } catch { return false; }
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 // Routes
 
-// JWT generation
-app.post("/jwt", (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ message: "Email required" });
-  const token = jwt.sign({ email: email.toLowerCase() }, process.env.JWT_SECRET, { expiresIn: "70d" });
-  res.json({ token });
+// JWT Generation
+app.post("/jwt", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      console.log("Missing email in /jwt request");
+      return res.status(400).json({ message: "Email required" });
+    }
+    const token = jwt.sign({ email: email.toLowerCase() }, process.env.JWT_SECRET, { expiresIn: "70d" });
+    console.log(`JWT generated for ${email.toLowerCase()}`);
+    res.json({ token });
+  } catch (err) {
+    console.error("Error in /jwt:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 // Login
@@ -125,10 +186,16 @@ app.post("/login", async (req, res) => {
   try {
     await connectToMongo();
     const { idToken, email } = req.body;
-    if (!idToken || !email) return res.status(400).json({ message: "ID token and email required" });
+    if (!idToken || !email) {
+      console.log(`Missing fields: idToken=${!!idToken}, email=${email}`);
+      return res.status(400).json({ message: "ID token and email required" });
+    }
 
     const normalizedEmail = email.toLowerCase();
-    let user = await usersCollection.findOne({ email: normalizedEmail });
+    let user = await usersCollection.findOne(
+      { email: normalizedEmail },
+      { collation: { locale: "en", strength: 2 } }
+    );
     if (!user) {
       const result = await usersCollection.insertOne({
         name: email.split("@")[0],
@@ -138,28 +205,35 @@ app.post("/login", async (req, res) => {
         googleAuth: false,
         createdAt: new Date(),
       });
-      user = { ...user, _id: result.insertedId };
+      user = { email: normalizedEmail, _id: result.insertedId };
+      console.log(`User created: ${normalizedEmail}, ID: ${result.insertedId}`);
     }
 
     const token = jwt.sign({ email: normalizedEmail }, process.env.JWT_SECRET, { expiresIn: "70d" });
+    console.log(`Login successful for ${normalizedEmail}`);
     res.json({ token });
   } catch (err) {
-    console.error(err);
+    console.error("Error in /login:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// Add User
+// Root Route
+app.get("/", async (req, res) => {
+  try {
+    await connectToMongo();
+    res.json("✅ HostelMate Server is Running");
+  } catch (err) {
+    console.error("Error in /:", err.message);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
-
-// Root route
-app.get("/", (req, res) => res.json("✅ HostelMate Server is Running"));
-
-// Global error handler
+// Global Error Handler
 app.use((err, req, res, next) => {
-  console.error("Global error:", err);
+  console.error("Global error:", err.message, err.stack);
   res.status(500).json({ message: "Server error", error: err.message });
 });
 
-// Vercel export
+// Vercel Serverless Export
 module.exports = serverless(app);
