@@ -192,7 +192,7 @@ app.post("/users", async (req, res) => {
     const result = await usersCollection.insertOne({
       name: user.name,
       email: user.email.toLowerCase(),
-      photoURL: user.photoURL || null,
+      photoURL: user.photoURL,
       role: user.role || "user",
       googleAuth: user.googleAuth || false,
       createdAt: new Date(),
