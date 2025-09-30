@@ -158,7 +158,7 @@ app.post("/login", async (req, res) => {
       const result = await usersCollection.insertOne({
         name: email.split("@")[0],
         email: normalizedEmail,
-        photoURL: null,
+        photoURL: photoURL || null,
         role: "user",
         googleAuth: false,
         createdAt: new Date(),
